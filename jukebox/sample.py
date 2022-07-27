@@ -36,11 +36,15 @@ def sample_single_window(zs, labels, sampling_kwargs, level, prior, start, hps):
     # get z already sampled at current level
     z = zs[level][:,start:end]
 
-    if 'sample_tokens' in sampling_kwargs:
+    if "sample_tokens" in sampling_kwargs:
         # Support sampling a window shorter than n_ctx
-        sample_tokens = sampling_kwargs['sample_tokens']
+        sample_tokens = sampling_kwargs["sample_tokens"]
+        if sample_tokens is None:
+            sample_tokens = end - start
+
     else:
-        sample_tokens = (end - start)
+        sample_tokens = end - start
+        
     conditioning_tokens, new_tokens = z.shape[1], sample_tokens - z.shape[1]
 
     print_once(f"Sampling {sample_tokens} tokens for [{start},{start+sample_tokens}]. Conditioning on {conditioning_tokens} tokens")
@@ -92,7 +96,7 @@ def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
     alignments = None
     for level in reversed(sample_levels):
         prior = priors[level]
-        prior.cuda()
+        prior.to(hps.device)
         empty_cache()
 
         # Set correct total_length, hop_length, labels and sampling_kwargs for level
@@ -101,7 +105,7 @@ def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
         hop_length = int(hps.hop_fraction[level]*prior.n_ctx)
         zs = sample_level(zs, labels[level], sampling_kwargs[level], level, prior, total_length, hop_length, hps)
 
-        prior.cpu()
+        # prior.to("cpu")
         empty_cache()
 
         # Decode sample
@@ -115,15 +119,15 @@ def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
             os.makedirs(logdir)
         t.save(dict(zs=zs, labels=labels, sampling_kwargs=sampling_kwargs, x=x), f"{logdir}/data.pth.tar")
         save_wav(logdir, x, hps.sr)
-        if alignments is None and priors[-1] is not None and priors[-1].n_tokens > 0 and not isinstance(priors[-1].labeller, EmptyLabeller):
-            alignments = get_alignment(x, zs, labels[-1], priors[-1], sampling_kwargs[-1]['fp16'], hps)
-        save_html(logdir, x, zs, labels[-1], alignments, hps)
+        # if alignments is None and priors[-1] is not None and priors[-1].n_tokens > 0 and not isinstance(priors[-1].labeller, EmptyLabeller):
+        #     alignments = get_alignment(x, zs, labels[-1], priors[-1], sampling_kwargs[-1]['fp16'], hps)
+        # save_html(logdir, x, zs, labels[-1], alignments, hps)
     return zs
 
 # Generate ancestral samples given a list of artists and genres
 def ancestral_sample(labels, sampling_kwargs, priors, hps):
     sample_levels = list(range(len(priors)))
-    zs = [t.zeros(hps.n_samples,0,dtype=t.long, device='cuda') for _ in range(len(priors))]
+    zs = [t.zeros(hps.n_samples,0,dtype=t.long, device='cpu') for _ in range(len(priors))]
     zs = _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps)
     return zs
 
@@ -157,13 +161,13 @@ def load_prompts(audio_files, duration, hps):
         xs.extend(xs)
     xs = xs[:hps.n_samples]
     x = t.stack([t.from_numpy(x) for x in xs])
-    x = x.to('cuda', non_blocking=True)
+    x = x.to('cpu', non_blocking=True)
     return x
 
 # Load codes from previous sampling run
 def load_codes(codes_file, duration, priors, hps):
     data = t.load(codes_file, map_location='cpu')
-    zs = [z.cuda() for z in data['zs']]
+    zs = [z.cpu() for z in data['zs']]
     assert zs[-1].shape[0] == hps.n_samples, f"Expected bs = {hps.n_samples}, got {zs[-1].shape[0]}"
     del data
     if duration is not None:
@@ -224,7 +228,7 @@ def save_samples(model, device, hps, sample_hps):
         metas.extend(metas)
     metas = metas[:hps.n_samples]
 
-    labels = [prior.labeller.get_batch_labels(metas, 'cuda') for prior in priors]
+    labels = [prior.labeller.get_batch_labels(metas, 'cpu') for prior in priors]
     for label in labels:
         assert label['y'].shape[0] == hps.n_samples
 
